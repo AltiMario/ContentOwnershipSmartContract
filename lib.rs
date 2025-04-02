@@ -27,6 +27,8 @@ mod content_ownership {
         NotOwner = 2,
         /// Returned if the counter overflow.
         CounterOverflow = 3,
+        /// Returned if the content hash is invalid according to the oracle data.
+        InvalidContent = 4,
     }
 
     /// A type alias for the contract's `Result` type.
@@ -79,12 +81,19 @@ mod content_ownership {
         /// Returns a unique content identifier.
         #[ink(message)]
         pub fn register_content(&mut self, content_hash: String) -> Result<u64> {
+            // Validate content hash against oracle data
+            if !self.validate_content_with_oracle(&content_hash) {
+                return Err(Error::InvalidContent);
+            }
+
             if self.content_hash_to_id.contains_key(&content_hash) {
                 return Ok(*self.content_hash_to_id.get(&content_hash).unwrap());
             }
             let caller = self.env().caller();
             let content_id = self.next_content_id;
-            self.next_content_id = self.next_content_id.checked_add(1).ok_or(Error::CounterOverflow)?;
+            self.next_content_id = self.next_content_id
+                .checked_add(1)
+                .ok_or(Error::CounterOverflow)?;
             let record = Content {
                 content_hash: content_hash.clone(),
                 owner: caller,
@@ -94,15 +103,17 @@ mod content_ownership {
             Ok(content_id)
         }
 
+        /// Validate content hash against the oracle data.
+        fn validate_content_with_oracle(&self, content_hash: &str) -> bool {
+            // Example: Check if the content hash starts with the oracle data
+            content_hash.starts_with(&self.oracle_data)
+        }
+
         /// Transfer ownership of a registered content item.
         ///
         /// The caller must be the current owner in order to authorize the transfer.
         #[ink(message)]
-        pub fn transfer_ownership(
-            &mut self,
-            content_id: u64,
-            new_owner: AccountId,
-        ) -> Result<()> {
+        pub fn transfer_ownership(&mut self, content_id: u64, new_owner: AccountId) -> Result<()> {
             let mut record = self.contents.get(content_id).ok_or(Error::ContentNotFound)?;
             if self.env().caller() != record.owner {
                 return Err(Error::NotOwner);
