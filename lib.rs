@@ -197,4 +197,181 @@ mod content_ownership {
             self.oracle_data.clone()
         }
     }
+
+    //----------------------------------
+    // Unit Tests
+    //----------------------------------
+
+    /// # ContentOwnership Contract Test Suite
+    ///
+    /// This module contains comprehensive tests for the `ContentOwnership` contract,
+    /// covering core functionality, edge cases, and security requirements.
+    ///
+    /// ## Test Accounts Convention:
+    /// - **Alice**: Default caller/initiator (ink! default account)
+    /// - **Bob**: Counterparty account
+    /// - **Charlie**: Unauthorized third party
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ink::env::{test, DefaultEnvironment};
+
+        /// Tests the `new` constructor to ensure the contract initializes correctly.
+        /// - Verifies that the admin is set to the caller.
+        /// - Verifies that the default oracle data is initialized.
+        #[ink::test]
+        fn test_new() {
+            let contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            assert_eq!(contract.admin, caller);
+            assert_eq!(contract.get_oracle_data(), "default_oracle");
+        }
+
+        /// Tests the `update_oracle_data` function for successful updates by the admin.
+        /// - Verifies that the oracle data is updated when called by the admin.
+        #[ink::test]
+        fn test_update_oracle_data() {
+            let mut contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            assert!(contract.update_oracle_data(String::from("new_oracle")).is_ok());
+            assert_eq!(contract.get_oracle_data(), "new_oracle");
+        }
+
+        /// Tests the `update_oracle_data` function for unauthorized access.
+        /// - Verifies that a non-admin user cannot update the oracle data.
+        #[ink::test]
+        fn test_update_oracle_data_not_admin() {
+            let mut contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().bob;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            assert_eq!(
+                contract.update_oracle_data(String::from("new_oracle")),
+                Err(Error::NotAdmin)
+            );
+        }
+
+        /// Tests the `register_content` function for successful content registration.
+        /// - Verifies that valid content is registered with a unique ID.
+        /// - Verifies that the caller becomes the owner of the content.
+        #[ink::test]
+        fn test_register_content() {
+            let mut contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            let content_hash = String::from("default_oracle_content");
+            let content_id = contract.register_content(content_hash.clone()).unwrap();
+            assert_eq!(content_id, 1);
+
+            let content = contract.get_content(content_id).unwrap();
+            assert_eq!(content.content_hash, content_hash);
+            assert_eq!(content.owner, caller);
+        }
+
+        /// Tests the `register_content` function for invalid content.
+        /// - Verifies that content with an invalid hash is rejected.
+        #[ink::test]
+        fn test_register_content_invalid() {
+            let mut contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            let content_hash = String::from("invalid_content");
+            assert_eq!(contract.register_content(content_hash), Err(Error::InvalidContent));
+        }
+
+        /// Tests the `transfer_ownership` function for successful ownership transfer.
+        /// - Verifies that the current owner can transfer ownership to another account.
+        #[ink::test]
+        fn test_transfer_ownership() {
+            let mut contract = ContentOwnership::new();
+            let alice = test::default_accounts::<DefaultEnvironment>().alice;
+            let bob = test::default_accounts::<DefaultEnvironment>().bob;
+            test::set_caller::<DefaultEnvironment>(alice);
+
+            let content_hash = String::from("default_oracle_content");
+            let content_id = contract.register_content(content_hash.clone()).unwrap();
+
+            test::set_caller::<DefaultEnvironment>(alice);
+            assert!(contract.transfer_ownership(content_id, bob).is_ok());
+
+            let content = contract.get_content(content_id).unwrap();
+            assert_eq!(content.owner, bob);
+        }
+
+        /// Tests the `transfer_ownership` function for unauthorized access.
+        /// - Verifies that a non-owner cannot transfer ownership.
+        #[ink::test]
+        fn test_transfer_ownership_not_owner() {
+            let mut contract = ContentOwnership::new();
+            let alice = test::default_accounts::<DefaultEnvironment>().alice;
+            let bob = test::default_accounts::<DefaultEnvironment>().bob;
+            test::set_caller::<DefaultEnvironment>(alice);
+
+            let content_hash = String::from("default_oracle_content");
+            let content_id = contract.register_content(content_hash.clone()).unwrap();
+
+            test::set_caller::<DefaultEnvironment>(bob);
+            assert_eq!(contract.transfer_ownership(content_id, alice), Err(Error::NotOwner));
+        }
+
+        /// Tests the `transfer_ownership` function for unauthorized access by Charlie.
+        /// - Verifies that a third party (Charlie) cannot transfer ownership of content they do not own.
+        #[ink::test]
+        fn test_transfer_ownership_unauthorized_charlie() {
+            let mut contract = ContentOwnership::new();
+            let alice = test::default_accounts::<DefaultEnvironment>().alice;
+            let charlie = test::default_accounts::<DefaultEnvironment>().charlie;
+            test::set_caller::<DefaultEnvironment>(alice);
+
+            let content_hash = String::from("default_oracle_content");
+            let content_id = contract.register_content(content_hash.clone()).unwrap();
+
+            test::set_caller::<DefaultEnvironment>(charlie);
+            assert_eq!(
+                contract.transfer_ownership(content_id, alice),
+                Err(Error::NotOwner)
+            );
+        }
+
+        /// Tests the `get_content` function for non-existent content.
+        /// - Verifies that querying a non-existent content ID returns `None`.
+        #[ink::test]
+        fn test_get_content_not_found() {
+            let contract = ContentOwnership::new();
+            assert!(contract.get_content(999).is_none());
+        }
+
+        /// Tests the `register_content` function for duplicate content registration.
+        /// - Verifies that registering the same content hash returns the same content ID.
+        #[ink::test]
+        fn test_register_content_duplicate() {
+            let mut contract = ContentOwnership::new();
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            let content_hash = String::from("default_oracle_content");
+            let content_id_1 = contract.register_content(content_hash.clone()).unwrap();
+            let content_id_2 = contract.register_content(content_hash).unwrap();
+
+            assert_eq!(content_id_1, content_id_2);
+        }
+
+        /// Tests the `register_content` function for counter overflow.
+        /// - Verifies that attempting to register content when the counter is at its maximum value results in an error.
+        #[ink::test]
+        fn test_counter_overflow() {
+            let mut contract = ContentOwnership::new();
+            contract.next_content_id = u64::MAX;
+
+            let caller = test::default_accounts::<DefaultEnvironment>().alice;
+            test::set_caller::<DefaultEnvironment>(caller);
+
+            let content_hash = String::from("default_oracle_content");
+            assert_eq!(contract.register_content(content_hash), Err(Error::CounterOverflow));
+        }
+    }
 }
