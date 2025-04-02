@@ -1,13 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+/// The `content_ownership` module defines a smart contract for managing digital content ownership.
+/// It allows users to register digital content, transfer ownership, and validate content using oracle data.
 #[ink::contract]
 mod content_ownership {
     use ink::storage::Mapping;
     use ink::prelude::string::String;
     use ink::prelude::collections::BTreeMap;
 
-    /// A simple structure representing a digital content record.
-    /// It holds an IPFS (or similar) content hash and the current owner's AccountId.
+    /// Represents a digital content record stored on-chain.
+    /// Each record contains:
+    /// - `content_hash`: A unique identifier for the content (e.g., an IPFS hash).
+    /// - `owner`: The AccountId of the current owner of the content.
     #[derive(scale::Encode, scale::Decode, Clone, Debug, PartialEq, Eq)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout))]
     pub struct Content {
@@ -15,57 +19,86 @@ mod content_ownership {
         owner: AccountId,
     }
 
-    /// Custom error type for the contract.
+    /// Defines custom error types for the contract.
+    /// These errors are returned when specific conditions are not met.
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum Error {
-        /// Returned if a function is called by someone other than the admin.
+        /// Error returned when a non-admin user attempts an admin-only action.
         NotAdmin = 0,
-        /// Returned if content with the given id is not found.
+        /// Error returned when a content ID is not found in the storage.
         ContentNotFound = 1,
-        /// Returned if a function is called by someone other than the content owner.
+        /// Error returned when a non-owner attempts to transfer ownership.
         NotOwner = 2,
-        /// Returned if the counter overflow.
+        /// Error returned when the content ID counter overflows.
         CounterOverflow = 3,
-        /// Returned if the content hash is invalid according to the oracle data.
+        /// Error returned when the content hash is deemed invalid by the oracle.
         InvalidContent = 4,
     }
 
-    /// A type alias for the contract's `Result` type.
+    /// A type alias for the contract's result type.
+    /// It wraps the `Result` type with the contract's custom `Error` enum.
     pub type Result<T> = core::result::Result<T, Error>;
 
-    /// The ContentOwnership contract maintains on‑chain tracking of digital content and its owner.
+    /// The `ContentOwnership` contract manages digital content and its ownership.
+    /// It provides functionality for:
+    /// - Registering new content.
+    /// - Transferring ownership of content.
+    /// - Validating content using oracle data.
     #[ink(storage)]
     pub struct ContentOwnership {
-        /// The administrator of the contract.
+        /// The administrator of the contract, typically the deployer.
         admin: AccountId,
-        /// Oracle data which serves as a trusted reference. It could be, for example, a hash of licensing terms.
+        /// Oracle data used for validating content (e.g., a hash of licensing terms).
         oracle_data: String,
-        /// Mapping of content IDs to content records.
+        /// A mapping of content IDs to their corresponding content records.
         contents: Mapping<u64, Content>,
         /// A counter for generating unique content IDs.
         next_content_id: u64,
-        /// Mapping of content hashes to content IDs.
+        /// A mapping of content hashes to their corresponding content IDs.
         content_hash_to_id: BTreeMap<String, u64>,
     }
 
-    impl ContentOwnership {
-        /// Constructor: upon deployment, the deployer becomes the admin and provides an initial piece of oracle data.
-        ///
-        /// In a production scenario, this oracle data might be a hash of off‑chain licensing details or the current policy version.
-        #[ink(constructor)]
-        pub fn new(initial_oracle_data: String) -> Self {
+    //----------------------------------
+    // Default Implementation
+    //----------------------------------
+
+    /// Provides default initialization values for the contract.
+    /// This is primarily used for testing or demonstration purposes.
+    impl Default for ContentOwnership {
+        fn default() -> Self {
             Self {
-                admin: Self::env().caller(),
-                oracle_data: initial_oracle_data,
+                admin: AccountId::from([0u8; 32]),
+                oracle_data: String::from("default_oracle"),
                 contents: Mapping::default(),
                 next_content_id: 1,
                 content_hash_to_id: BTreeMap::new(),
             }
         }
+    }
 
-        /// Update the stored oracle data.
-        /// Only the admin (contract deployer) is allowed to update this field.
+    //----------------------------------
+    // Contract Implementation
+    //----------------------------------
+
+    impl ContentOwnership {
+        /// Constructor: Initializes the contract with the deployer as the admin and sets the initial oracle data.
+        #[ink(constructor)]
+        pub fn new() -> Self {
+            Self {
+                admin: Self::env().caller(),
+                ..Default::default()
+            }
+        }
+
+        /// Updates the oracle data stored in the contract.
+        /// Only the admin can call this function.
+        ///
+        /// # Arguments
+        /// - `new_data`: The new oracle data to be stored.
+        ///
+        /// # Errors
+        /// - Returns `Error::NotAdmin` if the caller is not the admin.
         #[ink(message)]
         pub fn update_oracle_data(&mut self, new_data: String) -> Result<()> {
             if self.env().caller() != self.admin {
@@ -75,13 +108,21 @@ mod content_ownership {
             Ok(())
         }
 
-        /// Register new digital content on-chain.
+        /// Registers new digital content on-chain.
+        /// The caller provides a content hash, which is validated against the oracle data.
+        /// If valid, the content is stored with the caller as the owner.
         ///
-        /// The caller submits the content hash (e.g. an IPFS hash) and the contract stores it together with the caller’s AccountId.
-        /// Returns a unique content identifier.
+        /// # Arguments
+        /// - `content_hash`: The unique hash representing the content (e.g., an IPFS hash).
+        ///
+        /// # Returns
+        /// - A unique content ID for the registered content.
+        ///
+        /// # Errors
+        /// - Returns `Error::InvalidContent` if the content hash is invalid.
+        /// - Returns `Error::CounterOverflow` if the content ID counter overflows.
         #[ink(message)]
         pub fn register_content(&mut self, content_hash: String) -> Result<u64> {
-            // Validate content hash against oracle data
             if !self.validate_content_with_oracle(&content_hash) {
                 return Err(Error::InvalidContent);
             }
@@ -103,15 +144,27 @@ mod content_ownership {
             Ok(content_id)
         }
 
-        /// Validate content hash against the oracle data.
+        /// Validates a content hash against the oracle data.
+        ///
+        /// # Arguments
+        /// - `content_hash`: The hash to validate.
+        ///
+        /// # Returns
+        /// - `true` if the content hash is valid, `false` otherwise.
         fn validate_content_with_oracle(&self, content_hash: &str) -> bool {
-            // Example: Check if the content hash starts with the oracle data
             content_hash.starts_with(&self.oracle_data)
         }
 
-        /// Transfer ownership of a registered content item.
+        /// Transfers ownership of a registered content item to a new owner.
+        /// Only the current owner can authorize the transfer.
         ///
-        /// The caller must be the current owner in order to authorize the transfer.
+        /// # Arguments
+        /// - `content_id`: The unique ID of the content to transfer.
+        /// - `new_owner`: The AccountId of the new owner.
+        ///
+        /// # Errors
+        /// - Returns `Error::ContentNotFound` if the content ID is not found.
+        /// - Returns `Error::NotOwner` if the caller is not the current owner.
         #[ink(message)]
         pub fn transfer_ownership(&mut self, content_id: u64, new_owner: AccountId) -> Result<()> {
             let mut record = self.contents.get(content_id).ok_or(Error::ContentNotFound)?;
@@ -123,13 +176,22 @@ mod content_ownership {
             Ok(())
         }
 
-        /// Retrieve the content record by its unique identifier.
+        /// Retrieves a content record by its unique identifier.
+        ///
+        /// # Arguments
+        /// - `content_id`: The unique ID of the content to retrieve.
+        ///
+        /// # Returns
+        /// - An `Option` containing the content record if found, or `None` if not found.
         #[ink(message)]
         pub fn get_content(&self, content_id: u64) -> Option<Content> {
             self.contents.get(content_id)
         }
 
-        /// Return the current oracle data stored in the contract.
+        /// Returns the current oracle data stored in the contract.
+        ///
+        /// # Returns
+        /// - A `String` containing the oracle data.
         #[ink(message)]
         pub fn get_oracle_data(&self) -> String {
             self.oracle_data.clone()
